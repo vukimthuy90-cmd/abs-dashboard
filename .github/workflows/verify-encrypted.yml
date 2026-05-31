@@ -1,0 +1,63 @@
+name: Verify dashboard is encrypted
+
+# Lớp phòng thủ thứ 2 (sau verify_deploy.py trong deploy.sh).
+# Chạy SAU mỗi push: soi index.html đã lên repo PUBLIC có thực sự mã hóa StatiCrypt
+# và KHÔNG lộ số liệu dashboard ở dạng cleartext. Lỗi → báo đỏ + mail GitHub cho chủ repo.
+# Lưu ý: GitHub Pages vẫn serve file ngay khi push — Actions ở đây là CẢNH BÁO/audit,
+# không chặn được serve. Lớp CHẶN thật nằm ở deploy.sh (trước push). Đây là lưới thứ 2.
+
+on:
+  push:
+    branches: [main]
+    paths: [index.html]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kiểm tra index.html đã mã hóa, không lộ plaintext
+        run: |
+          python3 - <<'PY'
+          import os, sys
+
+          MIN_BYTES = 50_000
+          MIN_STATICRYPT_HITS = 5
+          LEAK_MARKERS = ["begin_checkout", "Lead rate", "Doanh thu",
+                          "revenue_daily", "ga4_daily", "Snapshot"]
+          PII_MARKERS = ["@gmail.com", "@john.vn", "X-Internal-Key"]
+
+          path = "index.html"
+          errs = []
+
+          if not os.path.isfile(path):
+              print("✗ không tìm thấy index.html"); sys.exit(1)
+
+          size = os.path.getsize(path)
+          if size < MIN_BYTES:
+              errs.append(f"file quá nhỏ ({size:,}B) — build/mã hóa có thể hỏng")
+
+          with open(path, encoding="utf-8", errors="ignore") as f:
+              html = f.read()
+
+          if html.count("staticrypt") < MIN_STATICRYPT_HITS:
+              errs.append("thiếu chữ ký StatiCrypt — có thể là plaintext chưa mã hóa")
+
+          leaked = [m for m in LEAK_MARKERS if m in html]
+          if leaked:
+              errs.append(f"LỘ nội dung dashboard cleartext: {leaked}")
+
+          pii = [m for m in PII_MARKERS if m in html]
+          if pii:
+              errs.append(f"LỘ PII/secret cleartext: {pii}")
+
+          if errs:
+              for e in errs:
+                  print("✗", e)
+              print("::error::Dashboard public KHÔNG an toàn — xem chi tiết phía trên.")
+              sys.exit(1)
+
+          print(f"✓ AN TOÀN: size {size:,}B · đã mã hóa StatiCrypt · 0 leak · 0 PII")
+          PY
